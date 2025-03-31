@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# version 0.1
+# version 0.2
 
 if [ $EUID -ne 0 ] ; then
   exec sudo "$0" "$@"
@@ -9,6 +9,9 @@ fi
 file=$1
 dir=$2
 
+cipher="serpent-xts-plain64"
+sha="sha512sum"
+
 check_file(){
   if [ "x$file" != "x" ] && [ -f "$file" ] ; then
     file_ok="y"
@@ -16,7 +19,7 @@ check_file(){
 }
 
 check_map(){
-  loop=$(losetup -j $file -O NAME -n | head -1)
+  loop=$(losetup -j "$file" -O NAME -n | head -1)
   if [ "x$loop" != "x" ] ; then
     is_mapped="y"
   fi
@@ -31,8 +34,8 @@ enter_pass(){
     exit 0
   fi
 
-  key=$(echo -n "$pass1" | sha256sum | awk '{print $1}')
-  tmp=$(echo -n "$key" | sha256sum | awk '{print $1}')
+  key=$(echo -n "$pass1" | $sha | awk '{print $1}')
+  tmp=$(echo -n "$key" | $sha | awk '{print $1}')
 
 }
 
@@ -132,7 +135,7 @@ map_file(){
     tailer=$(($tailer / 2))
   done
 
-  filesize=$(stat --format="%s" $file)
+  filesize=$(stat --format="%s" "$file")
 
   usable_size=$(( ($filesize - $offset - $tailer) / 1024 / 1024 ))
   if [ $usable_size -lt 10 ] ; then
@@ -141,14 +144,14 @@ map_file(){
   fi
 
   sectors=$(( ($filesize - $offset - $tailer) / 512 ))
-  loop=$(losetup -f --show --offset $offset --size $(($sectors * 512)) $file)
+  loop=$(losetup -f --show --offset $offset --size $(($sectors * 512)) "$file")
 
   if [ "x$loop" != "x" ] ; then
     name=$(basename $loop)
     sectors=$(cat /sys/class/block/$name/size)
     
     if [ $sectors -gt 0 ] ; then
-      echo "0 $sectors crypt aes-cbc-plain64 $key 0 $loop 0" \
+      echo "0 $sectors crypt $cipher $key 0 $loop 0" \
         | dmsetup create stegano_$name
       if [ -b "/dev/mapper/stegano_$name" ] ; then
 

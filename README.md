@@ -34,4 +34,9 @@ There is no way to recover a forgotten password.
 
 Please do not use the program for illegal activities.
 
+### Ciphers
+    AES (aes-cbc-plain64, aes-xts-plain64, aes-lrw-plain64)
+    Serpent (serpent-xts-plain64, serpent-cbc-plain64)
+    Twofish (twofish-xts-plain64, twofish-cbc-plain64)
+    Camellia (camellia-xts-plain64, camellia-cbc-plain64)
 
