@@ -1,0 +1,221 @@
+#!/bin/bash
+#
+# version 0.1
+
+if [ $EUID -ne 0 ] ; then
+  exec sudo "$0" "$@"
+fi
+
+file=$1
+dir=$2
+
+check_file(){
+  if [ "x$file" != "x" ] && [ -f "$file" ] ; then
+    file_ok="y"
+  fi
+}
+
+check_map(){
+  loop=$(losetup -j $file -O NAME -n | head -1)
+  if [ "x$loop" != "x" ] ; then
+    is_mapped="y"
+  fi
+}
+
+enter_pass(){
+  echo -n "Enter password: "
+  read -s pass1
+  echo 
+
+  if [ "x$pass1" = "x" ] ; then
+    exit 0
+  fi
+
+  key=$(echo -n "$pass1" | sha256sum | awk '{print $1}')
+  tmp=$(echo -n "$key" | sha256sum | awk '{print $1}')
+
+}
+
+check_dir(){
+  dir_ok="n"
+  if [ "x$dir" = "x" ] ; then
+    echo -n "Enter mountpoint: "
+    read dir
+  fi
+  if [ "x$dir" != "x" ] ; then
+    if [ -d "$dir" ] ; then
+      dir_ok="y"
+    else
+      mkdir "$dir"
+      if [ -d "$dir" ] ; then
+        dir_ok="y"
+      fi
+    fi
+  fi
+}
+
+mount_dir(){
+  mount /dev/mapper/stegano_$name $dir
+  if [ $? -eq 0 ]; then
+    if [ "x$SUDO_USER" != "x" ] ; then
+      chown $SUDO_USER:$SUDO_USER $dir
+    fi
+    mount_ok="y"
+  fi
+}
+remove_map(){
+  if [ -b "/dev/mapper/stegano_$name" ] ; then
+    dmsetup remove stegano_$name
+    if [ $? -ne 0 ] ; then
+      echo "ERROR: Can't remove mapped device"
+      exit 1
+    fi
+  fi
+}
+
+check_fs(){
+  blkid /dev/mapper/stegano_$name >/dev/null 2>&1
+  if [ $? -ne 0 ] ; then
+    return
+  fi
+  e2fsck -n /dev/mapper/stegano_$name >/dev/null 2>&1
+  if [ $? -ne 0 ] ; then
+    return
+  fi
+  fs_ok="y"
+  return
+}
+
+create_fs(){
+  if [ $fs_ok != "y" ] ; then 
+    echo "Usable size is $usable_size Mb."
+    echo "No filesystem found, create new? (y/N)"
+    read a
+    if [ "$a" = "y" ] ; then
+      echo -n "Cleaning... "
+      dd if=/dev/urandom of=/dev/mapper/stegano_$name bs=512 count=$sectors status=none
+      mkfs.ext4 -F -q /dev/mapper/stegano_$name
+      echo "done"
+      if [ $? -eq 0 ] ; then
+        fs_ok="y"
+      fi
+    fi 
+  fi
+}
+
+
+
+map_file(){
+
+  key=""
+  enter_pass
+
+  offset=0
+  nsym=4
+  while [ $offset -lt 20000000 ] ; do
+    sub=$(echo -n $tmp | head -c $nsym)
+    offset=$((0x$sub))
+    nsym=$(($nsym + 1))
+  done
+  while [ $offset -gt 60000000 ] ; do
+    offset=$(($offset / 2))
+  done
+
+  tailer=0
+  nsym=4
+  while [ $tailer -lt 20000000 ] ; do
+    sub=$(echo -n $tmp | tail -c $nsym)
+    tailer=$((0x$sub))
+    nsym=$(($nsym + 1))
+  done
+  while [ $tailer -gt 60000000 ] ; do
+    tailer=$(($tailer / 2))
+  done
+
+  filesize=$(stat --format="%s" $file)
+
+  usable_size=$(( ($filesize - $offset - $tailer) / 1024 / 1024 ))
+  if [ $usable_size -lt 10 ] ; then
+    echo "Usable size too small! Select other file"
+    exit 1
+  fi
+
+  sectors=$(( ($filesize - $offset - $tailer) / 512 ))
+  loop=$(losetup -f --show --offset $offset --size $(($sectors * 512)) $file)
+
+  if [ "x$loop" != "x" ] ; then
+    name=$(basename $loop)
+    sectors=$(cat /sys/class/block/$name/size)
+    
+    if [ $sectors -gt 0 ] ; then
+      echo "0 $sectors crypt aes-cbc-plain64 $key 0 $loop 0" \
+        | dmsetup create stegano_$name
+      if [ -b "/dev/mapper/stegano_$name" ] ; then
+
+        fs_ok="n"
+        check_fs
+        create_fs
+
+        if [ $fs_ok = "y" ] ; then
+
+          dir_ok="n"
+          check_dir
+
+          if [ "$dir_ok" = "y" ] ; then
+            mount_ok="n"
+            mount_dir
+            if [ "$mount_ok" = "y" ] ; then
+              echo "Success: mounted at $dir"
+              exit 0
+            fi
+          fi
+
+          remove_map
+          losetup -d $loop
+          exit 0
+
+        else
+          unmap_file
+        fi
+      else
+        echo "ERROR: Something wrong"
+        exit 1
+      fi
+    fi
+  fi
+}
+
+unmap_file(){
+  name=$(basename $loop)
+
+  fs=$(mount | grep "/dev/mapper/stegano_$name" | awk '{print $3}')
+  if [ "x$fs" != "x" ] ; then
+    umount $fs
+    if [ $? -ne 0 ] ; then
+      echo "Still mounted as $fs"
+      exit 1
+    fi
+  fi
+    
+  remove_map
+  losetup -d $loop
+  echo "Unmount device"
+  exit 0
+}
+#################################
+
+file_ok="n"
+check_file
+
+if [ $file_ok = "y" ] ; then
+
+  is_mapped="n"
+  check_map
+
+  if [ "$is_mapped" = "n" ] ; then
+    map_file
+  else
+    unmap_file
+  fi
+
+fi
